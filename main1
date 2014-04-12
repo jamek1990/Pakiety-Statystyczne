@@ -1,0 +1,669 @@
+/* 
+OZNACZENIA:
+	BJ - Box Jenkins
+	HB - Bootstrap hybrydowy
+	TB - Bootsrap studentyzowany
+*/
+
+
+
+#include <iostream>
+#include <iostream>
+#include <ctime>
+#include <fstream>
+#include <vector>
+#include <algorithm>
+#include <string>
+#include <set>
+
+#include <fstream>
+#include <string>
+#include <sstream> 
+#define _USE_MATH_DEFINES
+#include <cmath>
+#include <amp_math.h>
+#include "Matrix.h"
+#include "ModelAR.h"
+using namespace std;
+
+#define precyzja double
+
+const int max_rozmiar_proby = 2000;
+const int max_wymiar = 5;
+const int max_liczba_predykcji = 10;
+const int max_rzad_modelu = 10;
+
+precyzja model[max_wymiar][max_rozmiar_proby + max_liczba_predykcji];
+precyzja model2[max_wymiar][max_rozmiar_proby + max_liczba_predykcji];
+precyzja wspolczynniki[max_rzad_modelu][max_wymiar][max_wymiar];
+
+const int M = 10000;
+const int B = 1000;
+const double alpha = 0.1;
+
+const int rozmiar_proby =200;
+const int wymiar = 2;
+int rzad_modelu = 5;
+
+matrix A[rozmiar_proby];
+matrix BB[rozmiar_proby];
+matrix Aold[rozmiar_proby];
+matrix Bold[rozmiar_proby];
+matrix AR[rozmiar_proby];
+matrix AR2[rozmiar_proby];
+matrix EA,EB;
+vector< matrix > xacf;
+ModelAR  mod(2,5);
+vector<matrix> acf_m;
+
+
+void acf(int maxLag=5){
+	xacf.clear();
+	for(int i=0;i<=maxLag;i++)
+		xacf.push_back(matrix(wymiar,wymiar));
+
+	precyzja mean[wymiar];
+	precyzja sd[wymiar];
+
+	for(int j=0;j<wymiar;j++){
+		mean[j]=0;
+		for(int i=0;i<rozmiar_proby;i++)
+			mean[j]+=model[j][i];
+		mean[j]/=rozmiar_proby;
+	}
+
+	for(int j=0;j<wymiar;j++){
+		sd[j]=0;
+		for(int i=0;i<rozmiar_proby;i++)
+			sd[j]+=(model[j][i]-mean[j])*(model[j][i]-mean[j]);
+	}
+
+	for(int w1 = 0; w1<wymiar;w1++){
+		for(int w2 = 0; w2< wymiar;w2++){
+			for(int lag = 0 ;lag <=maxLag;lag++){
+				precyzja acf = 0;
+				for(int i= lag;i<rozmiar_proby;i++){
+					acf+=(model[w1][i] -mean[w1])*(model[w2][i-lag]  -mean[w2]);
+				}
+				xacf[lag].v(w1,w2)=acf/rozmiar_proby;//sqrt(sd[w1]*sd[w2]);
+			}
+		}
+	}
+}
+
+void solveYW(int m){
+	matrix betaA(wymiar,wymiar);
+	matrix betaB(wymiar,wymiar);
+    for(int i=0;i<=m;i++){
+    	betaA=matrix_add(betaA,matrix_mul(A[i ],xacf[m+1-i]));
+        betaB=matrix_add(betaB,matrix_mul(BB[i ],t(xacf[m+1-i])));
+    }
+    matrix KA,KB;
+    KA = matrix_mulV(t(qr_solve2K(t(EB),t(betaA))),-1);
+    KB = matrix_mulV(t(qr_solve2K(t(EA),t(betaB))),-1);
+    EB = matrix_mul((matrix_sub(diag(wymiar) , matrix_mul(KB,KA))),EB);
+    EA = matrix_mul((matrix_sub(diag(wymiar), matrix_mul(KA,KB))),EA);
+    for(int i=0;i<=(m+2);i++){
+    	Aold[i]= A[i];
+    	Bold[i]= BB[i];
+    }
+    for (int i =1;i<=(m+1);i++) {
+    	A[i] = matrix_add(Aold[i] , matrix_mul(KA ,Bold[m + 1 - i]));
+        BB[i] = matrix_add(Bold[i] , matrix_mul(KB,Aold[m + 1 - i]));
+    }
+}
+
+double calAIC(int m2) { 
+	matrix Q3(2,2), R3(2,2);
+	double det = 1;
+	householder2K(EA, R3, Q3);
+	for(int i =0;i<R3.rows;i++)
+		det*=R3.v(i,i);
+	if(det<0)det = -det;
+    return(rozmiar_proby*log(det)+2*m2*wymiar*wymiar);
+}
+
+int order;
+
+double  xaic[rozmiar_proby+5];
+void arWspolczynniki2(){
+	int nser = wymiar;
+    int nUsed = rozmiar_proby;
+    int orderMax = min(nUsed - 1, (int)floor(10 * log10(nUsed)));
+
+    acf(orderMax);
+    EA = xacf[0];
+    EB = xacf[0];
+    //TYLKO DLA WIELOWYMIAROWEGO SZEREGU 
+    for(int i =0;i<=(orderMax+1);i++)
+		A[i] = matrix(nser,nser);
+
+    for(int i =0;i<=(orderMax+1);i++)
+		BB[i] = matrix(nser,nser);
+    	for(int j=0;j<nser;j++){
+     		A[0].v(j,j)=BB[0].v(j,j)=1;	
+		}
+
+    for(int  m=0;m<5;m++){
+        xaic[m+1]=calAIC(m);
+        double minAIC = 1000000;
+        for(int i=1;i<=(m+1);i++)
+        	if(minAIC>xaic[i])
+        		minAIC = xaic[i];
+        if(xaic[m+1] == minAIC){
+        	for(int i=0;i<=(orderMax+1);i++)
+        		AR[i]=A[i];
+        	order=m;
+        }
+        if(m<orderMax) {
+          	solveYW(m);
+        }
+        
+    }
+    for(int i=0;i<5;i++){
+    	AR[i] = matrix_mulV(A[i+1],-1);
+    }
+}
+
+matrix gamma_y(int l){
+	matrix gy(2,2);
+	double mm[2];
+	mm[0]=mm[1]=0;
+
+	for(int i=0;i<rozmiar_proby;i++){
+		mm[0]+=model[0][i];
+		mm[1]+=model[1][i];
+	}
+	mm[0]/=rozmiar_proby;
+	mm[1]/=rozmiar_proby;
+	for(int j=0;j<wymiar;j++)
+			for(int k=0;k<wymiar;k++)
+				gy.v(j,k)=0;
+	for(int i=0;i<rozmiar_proby-abs(l);i++)
+		for(int j=0;j<wymiar;j++)
+			for(int k=0;k<wymiar;k++)
+				gy.v(k,j)+=(model[k][i+abs(l)]-mm[k])*(model[j][i]-mm[j]);
+	for(int j=0;j<wymiar;j++)
+			for(int k=0;k<wymiar;k++)
+				gy.v(j,k)/=rozmiar_proby;
+	if(l<0)
+		return t(gy);
+	return gy;
+}
+matrix phi[6][6];
+
+void arWspolczynniki(){
+	const int p=5;
+	matrix cov[p+2];
+	for(int i=0;i<=(p+1);i++)
+		cov[i]=gamma_y(i);
+	matrix V = cov[0];
+	matrix fV = V;
+	matrix D = cov[1];
+	matrix fD = t(D);
+
+	matrix fphi[6][6];
+	matrix Vi[6];
+	matrix fVi(2,2);
+	matrix fDi(2,2);
+	matrix Di(2,2);
+	for(int i=1;i<=p;i++){
+		if(i == 1){
+			phi[i][i] = D*matrix_inverseK2(fV);
+			fphi[i][i] = fD*matrix_inverseK2(V);
+		}else{
+			phi[i][i] = Di*matrix_inverseK2(fVi);
+			fphi[i][i] = fDi*matrix_inverseK2(Vi[i-1]);
+			for(int k=1;k<=(i-1);k++){
+				phi[i][k] = phi[i-1][k]- phi[i][i]*fphi[i-1][i-k];
+				fphi[i][k] = fphi[i-1][k] - fphi[i][i]*phi[i-1][i-k];
+			}
+		}
+		Vi[i] = V;
+		fVi = fV;
+		Di = gamma_y(i+1);
+		fDi = gamma_y(-(i+1));
+		for(int j=1;j<=i;j++){
+			Vi[i] = Vi[i] - phi[i][j]*t(cov[j]);
+			fVi = fVi - fphi[i][j]*cov[j];
+			Di = Di - phi[i][j]*cov[i+1-j];
+			fDi = fDi - fphi[i][j]*t(cov[i+1-j]);
+		}	
+	}
+	for(int i=0;i<5;i++){
+    	AR[i] =phi[5][i+1];
+    }
+}
+
+
+const int p =5;
+double res[wymiar][rozmiar_proby+p];
+double  cen_res[wymiar][rozmiar_proby+p];
+matrix m(wymiar,1);
+matrix m2(1,wymiar);
+matrix hatX(1,wymiar);
+matrix blad(2,2);
+
+void hat_res(){
+	for(int i=p;i<rozmiar_proby;i++){
+		for(int k=0;k<wymiar;k++)
+			res[k][i-p]=model[k][i];
+		for(int j=1;j<=p;j++)
+			for(int k1=0;k1<wymiar;k1++)
+				for(int k2=0;k2<wymiar;k2++)
+					res[k1][i-p]-=AR[j-1].v(k1,k2)*model[k2][i-j];
+
+	}
+}
+/*######################################################
+
+	centrowanie residuow:
+
+	odejmujemy srednie od kazdej wartosci
+
+########################################################*/
+double mean[wymiar];
+void cen_hatres(){
+	//liczymy srednie dla kazdego wymiaru
+	for(int k=0;k<wymiar;k++){
+		mean[k]=0;
+		for(int i=0;i<(rozmiar_proby-p);i++)
+			mean[k]+=res[k][i];
+	}
+	for(int k=0;k<wymiar;k++)
+		mean[k]/=(double)(rozmiar_proby-p);
+	//odejmujemy srednie od kazdej wartosci
+	for(int k=0;k<wymiar;k++)
+		for(int i=0;i<(rozmiar_proby-p);i++)
+			cen_res[k][i]=(res[k][i]-mean[k]);
+}
+
+const int h = 5;
+double gen_res[wymiar][rozmiar_proby+h];
+
+/*######################################################
+
+	generuj_residua(ile):
+
+	generujemy losowa probe ze zwracaniem z centrowanych
+	residuow
+
+########################################################*/
+void generuj_residua(int ile){
+	for(int i=0;i<ile;i++){
+		int los = rand()%(rozmiar_proby-p);
+		for(int k=0;k<wymiar;k++){
+			gen_res[k][i]=cen_res[k][los];
+			res[k][i]=cen_res[k][los];
+		}
+	}
+}
+
+double Xrep[rozmiar_proby+h][wymiar];
+double Xrep2[rozmiar_proby+h][wymiar];
+void replikacjeX(){
+	generuj_residua(rozmiar_proby+h);
+	//pierwsze p wartosci losowe...
+  	for(int i=0;i<p;i++)
+  		for(int k=0;k<wymiar;k++)
+    		Xrep[i][k]=gen_res[k][i];//model[k][i];
+
+		
+
+	
+		
+  	
+	for(int i=p;i<(rozmiar_proby+h);i++){
+		for(int k=0;k<wymiar;k++)Xrep[i][k]=gen_res[k][i];
+  			for(int j=0;j<p;j++)	
+				for(int k1=0;k1<wymiar;k1++)
+					for(int k2=0;k2<wymiar;k2++)
+						Xrep[i][k1]+=AR[j].v(k1,k2)*Xrep[i-1-j][k2];
+  	}
+}
+
+void predykcja(bool czy_model){
+	if(czy_model){
+		for(int i=(rozmiar_proby-p-2);i<rozmiar_proby;i++)
+			for(int k=0;k<wymiar;k++)
+				Xrep2[i][k]=Xrep[i][k]=model[k][i];
+	}else{
+		for(int i=(rozmiar_proby-p-2);i<rozmiar_proby;i++)
+			for(int k=0;k<wymiar;k++)
+				Xrep2[i][k]=Xrep[i][k];
+	}
+ 	for(int i=rozmiar_proby;i<(rozmiar_proby+h);i++){
+		for(int k=0;k<wymiar;k++){
+			Xrep[i][k]=gen_res[k][i];
+			Xrep2[i][k]=0;
+		}
+  		for(int j=0;j<p;j++)	
+			for(int k1=0;k1<wymiar;k1++)
+				for(int k2=0;k2<wymiar;k2++){
+					Xrep[i][k1]+=AR[j].v(k1,k2)*Xrep[i-1-j][k2];
+					Xrep2[i][k1]+=AR[j].v(k1,k2)*Xrep2[i-1-j][k2];
+				}
+	}
+}
+
+void nowyModel(){
+	mod.generuj_model(rozmiar_proby+h);
+	for(int i =0;i<(rozmiar_proby+h);i++){
+		model[0][i]=mod.model[i][0];
+		model[1][i]=mod.model[i][1];
+	}
+}
+
+double abs2(double wartosc){
+	if(wartosc<0)return -wartosc;
+	return wartosc;
+}
+
+matrix theta[6];
+void wsp(){
+	theta[0] = matrix(2,2);
+	theta[0].v(0,0)=1;
+	theta[0].v(1,1)=1;
+	for(int i=1;i<=h;i++){
+		theta[i]= matrix(2,2);
+		for(int j=1;j<=i;j++)
+			theta[i]=matrix_add(theta[i],matrix_mul(theta[i-j],AR[j-1]));
+	}
+}
+
+matrix SigmaX[h+1];
+matrix SigmaX2[h+1];
+void mbsk(){
+	matrix sigma(2,2);
+	double res_mean[2];
+	res_mean[0]=res_mean[1]=0;
+	for(int i=0;i<rozmiar_proby-p;i++){
+		res_mean[0]+=res[0][i];
+		res_mean[1]+=res[1][i];
+	}
+	res_mean[0]/=(rozmiar_proby-p);
+	res_mean[1]/=(rozmiar_proby-p);
+	for(int i=0;i<rozmiar_proby-p;i++){
+		sigma.v(0,0)+=(res[0][i]-res_mean[0])*(res[0][i]-res_mean[0]);
+		sigma.v(0,1)+=(res[0][i]-res_mean[0])*(res[1][i]-res_mean[1]);
+		sigma.v(1,0)+=(res[1][i]-res_mean[1])*(res[0][i]-res_mean[0]);
+		sigma.v(1,1)+=(res[1][i]-res_mean[1])*(res[1][i]-res_mean[1]);
+	}
+	sigma.v(0,0)/=(rozmiar_proby-p);
+	sigma.v(0,1)/=(rozmiar_proby-p);
+	sigma.v(1,0)/=(rozmiar_proby-p);
+	sigma.v(1,1)/=(rozmiar_proby-p);
+	for(int i=0;i<h;i++){
+		SigmaX[i]=matrix(2,2);
+		for(int j=0;j<=i;j++){
+			SigmaX[i]=matrix_add(SigmaX[i],matrix_mul(matrix_mul(theta[j],sigma),t(theta[j])));
+		}
+	}
+}
+
+	double wielkoscKostkiBJ[M][h+1];
+	double wielkoscElipsyBJ[M][h+1];
+	double wielkoscKostkiHB[M][h+1];
+	double wielkoscElipsyHB[M][h+1];
+	double wielkoscKostkiTB[M][h+1];
+	double wielkoscElipsyTB[M][h+1];
+
+	double sredniaWielkoscKostkiBJ[h+1];
+	double sredniaWielkoscElipsyBJ[h+1];
+	double sredniaWielkoscKostkiHB[h+1];
+	double sredniaWielkoscElipsyHB[h+1];
+	double sredniaWielkoscKostkiTB[h+1];
+	double sredniaWielkoscElipsyTB[h+1];
+
+	int sukcesKostkaBJ[h+1];
+	int sukcesElipsaBJ[h+1];
+	int sukcesKostkaHB[h+1];
+	int sukcesElipsaHB[h+1];
+	int sukcesKostkaTB[h+1];
+	int sukcesElipsaTB[h+1];
+
+int main(){
+	srand (time(NULL));
+
+	double x0[h];
+	double x1[h];
+	double Q1[h+1][2000];
+	double Q2[h+1][2000];
+	double H[h+1][2000];
+	double H2[h+1][2000];
+
+	//pair<double,double> Q1v[h+1][4000];
+	//pair<double,double> Q2v[h+1][4000];
+
+	double Q11[h+1][2000];
+	double Q12[h+1][2000];
+
+	int q_ad2k = B*alpha/(2*wymiar)-1;
+	int q_1mad2k = B-B*alpha/(2*wymiar)+1;
+	int q_1ma = B-B*alpha;
+	ofstream plik_1("plik1.txt");
+	ofstream plik_2("plik2.txt");
+	ofstream plik_3("plik3.txt");
+
+	for(int zmiana_rozkladu=0;zmiana_rozkladu<3;zmiana_rozkladu++){
+		mod.r.read(zmiana_rozkladu+1);
+		mod.r.nr=1;
+		for(int i=1;i<=h;i++){
+			sukcesKostkaBJ[i]=0;
+			sukcesElipsaBJ[i]=0;
+			sukcesKostkaHB[i]=0;
+			sukcesElipsaHB[i]=0;
+			sukcesKostkaTB[i]=0;
+			sukcesElipsaTB[i]=0;
+		}
+
+
+		for(int i=0;i<M;i++){
+			nowyModel();
+			arWspolczynniki();
+			hat_res();
+			cen_hatres();
+			
+			predykcja(true);
+			wsp();
+			mbsk();
+			matrix SigmaXinv[h+1];
+			matrix X(1,h);
+			matrix Xhat(1,h);
+			for(int hh=1;hh<=h;hh++){
+				//kostka predykcyjna metody Boxa Jenkinsa
+				for(int k=0;k<wymiar;k++){
+					X.v(0,k)=model[k][rozmiar_proby+hh-1];
+					Xhat.v(0,k)=Xrep2[rozmiar_proby+hh-1][k];
+				}
+				wielkoscKostkiBJ[i][hh]=sqrt(SigmaX[hh-1].v(0,0))*3.919928*sqrt(SigmaX[hh-1].v(1,1))*3.919928;
+				if( model[0][rozmiar_proby+hh-1]>=(Xrep2[rozmiar_proby+hh-1][0]-1.959964*sqrt(SigmaX[hh-1].v(0,0))) && 
+					model[0][rozmiar_proby+hh-1]<=(Xrep2[rozmiar_proby+hh-1][0]+1.959964*sqrt(SigmaX[hh-1].v(0,0))) &&
+					model[1][rozmiar_proby+hh-1]>=(Xrep2[rozmiar_proby+hh-1][1]-1.959964*sqrt(SigmaX[hh-1].v(1,1))) &&
+					model[1][rozmiar_proby+hh-1]<=(Xrep2[rozmiar_proby+hh-1][1]+1.959964*sqrt(SigmaX[hh-1].v(1,1)))){ 
+					sukcesKostkaBJ[hh]++;
+				}
+				//elipsa predykcyjna metody Boxa Jenkinsa
+				wielkoscElipsyBJ[i][hh]=pow(M_PI,wymiar/2)*4.60517*sqrt(det2(SigmaX[hh-1]));
+				SigmaXinv[hh-1] = matrix_inverseK2(SigmaX[hh-1]);
+				if((t(X-Xhat)*SigmaXinv[hh-1]*(X-Xhat)).v(0,0)<4.60517)
+					sukcesElipsaBJ[hh]++;
+			}
+			//int ttt;cin>>ttt;
+			for(int r=0;r<h;r++){
+				x0[r]=Xrep2[rozmiar_proby+r][0];
+				x1[r]=Xrep2[rozmiar_proby+r][1];
+			}
+
+			for(int r=0;r<=h;r++)
+				SigmaX2[r]=SigmaX[r];
+
+			
+
+			for(int j=0;j<B;j++){
+				replikacjeX();
+				//kopiujemy model i wspolczynniki
+				//zamieniamy model na replikacje bootstrapowe
+				for(int r=0;r<rozmiar_proby;r++){
+					model2[0][r]=model[0][r];
+					model2[1][r]=model[1][r];
+					model[0][r]=Xrep[r][0];
+					model[1][r]=Xrep[r][1];
+				}
+				for(int r=0;r<p;r++)
+					AR2[r]=AR[r];
+				//generujemy dla niego wspolczynniki
+				arWspolczynniki();
+				
+				
+				//przewidujemy przyszle wartosci
+				predykcja(true);
+				/*hat_res();
+				cen_hatres();*/
+				for(int hh=1;hh<=h;hh++){
+					Q1[hh][j]=Xrep2[rozmiar_proby+hh-1][0]-Xrep[rozmiar_proby+hh-1][0];
+					Q2[hh][j]=Xrep2[rozmiar_proby+hh-1][1]-Xrep[rozmiar_proby+hh-1][1];
+					H[hh][j]=Q1[hh][j]*Q1[hh][j]+Q2[hh][j]*Q2[hh][j];
+				}
+				
+				wsp();
+				mbsk();
+				for(int r=0;r<p;r++)
+					AR[r]=AR2[r];
+				//przywracamy wladciwy model
+				for(int r=0;r<rozmiar_proby;r++){
+					model[0][r]=model2[0][r];
+					model[1][r]=model2[1][r];
+				}
+				for(int hh=1;hh<=h;hh++){
+					//matrix invsqr = sqrt_matrix2K(matrix_inverseK2(SigmaX[hh-1]));
+					//Q11[hh][j]=(Xrep2[rozmiar_proby+hh-1][0]-Xrep[rozmiar_proby+hh-1][0])*invsqr.v(0,0)+(Xrep2[rozmiar_proby+hh-1][1]-Xrep[rozmiar_proby+hh-1][1])*invsqr.v(0,1);
+					//Q12[hh][j]=(Xrep2[rozmiar_proby+hh-1][0]-Xrep[rozmiar_proby+hh-1][0])*invsqr.v(1,0)+(Xrep2[rozmiar_proby+hh-1][1]-Xrep[rozmiar_proby+hh-1][1])*invsqr.v(1,1);
+					Q11[hh][j]=(model[0][rozmiar_proby+hh-1]-Xrep[rozmiar_proby+hh-1][0])/sqrt(SigmaX[hh-1].v(0,0));//+(Xrep2[rozmiar_proby+hh-1][1]-Xrep[rozmiar_proby+hh-1][1])*invsqr.v(0,1);
+					Q12[hh][j]=(model[1][rozmiar_proby+hh-1]-Xrep[rozmiar_proby+hh-1][1])/sqrt(SigmaX[hh-1].v(1,1));//*invsqr.v(1,0)+(Xrep2[rozmiar_proby+hh-1][1]-Xrep[rozmiar_proby+hh-1][1])*invsqr.v(1,1);
+					
+					
+					H2[hh][j]=Q11[hh][j]*Q11[hh][j]+Q12[hh][j]*Q12[hh][j];
+				}
+
+				
+			}
+	
+			arWspolczynniki();
+		//	hat_res();
+		//	cen_hatres();
+			predykcja(true);
+
+
+
+
+			for(int hh=1;hh<=h;hh++){
+				sort(Q1[hh],Q1[hh]+B);
+				sort(Q2[hh],Q2[hh]+B);
+				sort(H[hh],H[hh]+B);
+				sort(Q11[hh],Q11[hh]+B);
+				sort(Q12[hh],Q12[hh]+B);
+				sort(H2[hh],H2[hh]+B);
+
+				wielkoscKostkiHB[i][hh]=(Q1[hh][q_ad2k]-Q1[hh][q_1mad2k])*(Q2[hh][q_ad2k]-Q2[hh][q_1mad2k]);
+				if(model[0][rozmiar_proby+hh-1]>=(x0[hh-1]+Q1[hh][q_ad2k]) && 
+					model[0][rozmiar_proby+hh-1]<=(x0[hh-1]+Q1[hh][q_1mad2k]) &&
+					model[1][rozmiar_proby+hh-1]>=(x1[hh-1]+Q2[hh][q_ad2k]) &&
+					model[1][rozmiar_proby+hh-1]<=(x1[hh-1]+Q2[hh][q_1mad2k])){ 
+					sukcesKostkaHB[hh]++;
+				}
+				wielkoscElipsyHB[i][hh]=M_PI*H[hh][q_1ma];
+				for(int k=0;k<wymiar;k++)
+					X.v(0,k)=model[k][rozmiar_proby+hh-1];
+				Xhat.v(0,0)=x0[hh-1];
+				Xhat.v(0,1)=x1[hh-1];
+				if((t(X-Xhat)*(X-Xhat)).v(0,0)<H[hh][q_1ma])
+					sukcesElipsaHB[hh]++;
+
+			
+
+				//elipsa predykcyjna
+				for(int k=0;k<wymiar;k++){
+					X.v(0,k)=model[k][rozmiar_proby+hh-1];
+					Xhat.v(0,k)=Xrep2[rozmiar_proby+hh-1][k];
+				}
+				wielkoscElipsyTB[i][hh]=pow(M_PI,wymiar/2)*H2[hh][q_1ma]*sqrt(det2(SigmaX2[hh-1]));
+				SigmaXinv[hh-1] = matrix_inverseK2(SigmaX2[hh-1]);
+				if(matrix_mul(matrix_mul(t(matrix_sub(X,Xhat)),SigmaXinv[hh-1]),matrix_sub(X,Xhat)).v(0,0)<H2[hh][q_1ma])
+					sukcesElipsaTB[hh]++;
+				//SigmaX2[hh-1] = sqrt_matrix2K(SigmaX2[hh-1]);
+				wielkoscKostkiTB[i][hh]=sqrt(SigmaX2[hh-1].v(0,0))*sqrt(SigmaX2[hh-1].v(1,1))*(Q11[hh][q_ad2k]-Q11[hh][q_1mad2k])*(Q12[hh][q_ad2k]-Q12[hh][q_1mad2k]);
+				if(model[0][rozmiar_proby+hh-1]>=(Xrep2[rozmiar_proby+hh-1][0]+sqrt(SigmaX[hh-1].v(0,0))*Q11[hh][q_ad2k]) && 
+					model[0][rozmiar_proby+hh-1]<=(Xrep2[rozmiar_proby+hh-1][0]+sqrt(SigmaX[hh-1].v(0,0))*Q11[hh][q_1mad2k]) &&
+					model[1][rozmiar_proby+hh-1]>=(Xrep2[rozmiar_proby+hh-1][1]+sqrt(SigmaX[hh-1].v(1,1))*Q12[hh][q_ad2k]) &&
+					model[1][rozmiar_proby+hh-1]<=(Xrep2[rozmiar_proby+hh-1][1]+sqrt(SigmaX[hh-1].v(1,1))*Q12[hh][q_1mad2k])){ 
+					sukcesKostkaTB[hh]++;
+				}
+			}
+
+			for(int hh=1;hh<=h;hh++){
+				sredniaWielkoscKostkiBJ[hh] = 0;
+				sredniaWielkoscElipsyBJ[hh] = 0;
+				sredniaWielkoscKostkiHB[hh] = 0;
+				sredniaWielkoscElipsyHB[hh] = 0;
+				sredniaWielkoscKostkiTB[hh] = 0;
+				sredniaWielkoscElipsyTB[hh] = 0;
+				for(int r=0;r<(i+1);r++){
+					sredniaWielkoscKostkiBJ[hh]+=wielkoscKostkiBJ[r][hh];
+					sredniaWielkoscElipsyBJ[hh]+=wielkoscElipsyBJ[r][hh];
+					sredniaWielkoscKostkiHB[hh]+=wielkoscKostkiHB[r][hh];
+					sredniaWielkoscElipsyHB[hh]+=wielkoscElipsyHB[r][hh];
+					sredniaWielkoscKostkiTB[hh]+=wielkoscKostkiTB[r][hh];
+					sredniaWielkoscElipsyTB[hh]+=wielkoscElipsyTB[r][hh];
+					
+				}
+				int r = i;
+				if(zmiana_rozkladu==0){
+					plik_1<<wielkoscKostkiBJ[r][hh]<<" "<<wielkoscElipsyBJ[r][hh]<<" "<<wielkoscKostkiHB[r][hh]<<" "<<wielkoscElipsyHB[r][hh]<<" "<<wielkoscKostkiTB[r][hh]<<" "<<wielkoscElipsyTB[r][hh]<<"\n";
+					plik_1<<sukcesKostkaBJ[hh]<<" "<<sukcesElipsaBJ[hh]<<" "<<sukcesKostkaHB[hh]<<" "<<sukcesElipsaHB[hh]<<" "<<sukcesKostkaTB[hh]<<" "<<sukcesElipsaTB[hh]<<"\n";
+				}else if(zmiana_rozkladu==1){
+					plik_2<<wielkoscKostkiBJ[r][hh]<<" "<<wielkoscElipsyBJ[r][hh]<<" "<<wielkoscKostkiHB[r][hh]<<" "<<wielkoscElipsyHB[r][hh]<<" "<<wielkoscKostkiTB[r][hh]<<" "<<wielkoscElipsyTB[r][hh]<<"\n";
+					plik_2<<sukcesKostkaBJ[hh]<<" "<<sukcesElipsaBJ[hh]<<" "<<sukcesKostkaHB[hh]<<" "<<sukcesElipsaHB[hh]<<" "<<sukcesKostkaTB[hh]<<" "<<sukcesElipsaTB[hh]<<"\n";
+				}else{
+					plik_3<<wielkoscKostkiBJ[r][hh]<<" "<<wielkoscElipsyBJ[r][hh]<<" "<<wielkoscKostkiHB[r][hh]<<" "<<wielkoscElipsyHB[r][hh]<<" "<<wielkoscKostkiTB[r][hh]<<" "<<wielkoscElipsyTB[r][hh]<<"\n";
+					plik_3<<sukcesKostkaBJ[hh]<<" "<<sukcesElipsaBJ[hh]<<" "<<sukcesKostkaHB[hh]<<" "<<sukcesElipsaHB[hh]<<" "<<sukcesKostkaTB[hh]<<" "<<sukcesElipsaTB[hh]<<"\n";
+				}
+				sredniaWielkoscKostkiBJ[hh]/=(i+1);
+				sredniaWielkoscElipsyBJ[hh]/=(i+1);
+				sredniaWielkoscKostkiHB[hh]/=(i+1);
+				sredniaWielkoscElipsyHB[hh]/=(i+1);
+				sredniaWielkoscKostkiTB[hh]/=(i+1);
+				sredniaWielkoscElipsyTB[hh]/=(i+1);
+			}
+
+			
+			cout<<"Wielkosc kostki HB: \n";
+
+			cout<<i+1<<"\n";
+			for(int hh=1;hh<=h;hh++){
+				printf("%d. %.2f(%0.1f)   %.2f(%0.1f)   %.2f(%0.1f)\n",hh,
+					sredniaWielkoscElipsyBJ[hh],100.0*(double)sukcesElipsaBJ[hh]/(i+1),
+					sredniaWielkoscElipsyHB[hh],100.0*(double)sukcesElipsaHB[hh]/(i+1),
+					sredniaWielkoscElipsyTB[hh],100.0*(double)sukcesElipsaTB[hh]/(i+1));
+			}
+			cout<<"\n\n";
+			for(int hh=1;hh<=h;hh++){
+				printf("%d. %.2f(%0.1f)   %.2f(%0.1f)   %.2f(%0.1f)\n",hh,
+					sredniaWielkoscKostkiBJ[hh],100.0*(double)sukcesKostkaBJ[hh]/(i+1),
+					sredniaWielkoscKostkiHB[hh],100.0*(double)sukcesKostkaHB[hh]/(i+1),
+					sredniaWielkoscKostkiTB[hh],100.0*(double)sukcesKostkaTB[hh]/(i+1));		
+			}
+			
+		}
+		
+
+
+	}
+	plik_1.close();
+	plik_2.close();
+	plik_3.close();
+	int g;
+	//cin>>g ;
+	return 0;
+}
+//22.9849
