@@ -1,0 +1,15 @@
+title 'Rozkład zmiennej zarobki';
+ods graphics off;
+ods select hist5;
+proc univariate data=Klaw.Lista1;
+   var zarobki;
+   histogram / midpoints=0 to 45 by 1.5 PFILL=M3X0 CFILL=BLUE
+               lognormal
+               weibull
+               gamma(color=black ALPHA=EST SIGMA=EST THETA=EST)
+               vaxis   = axis1
+               name    = 'hist5';
+   inset n mean(5.3) std='Odchylenie'(5.3) skewness(5.3)
+          / pos = ne  header = 'Statystyki podstawowe';
+   axis1 label=(a=90 r=0);
+run;
